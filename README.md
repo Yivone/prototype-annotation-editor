@@ -1,4 +1,4 @@
-# prototype-annotation-editor
+# prototype-annotation-editor 原型标注
 
 可复用的自研原型标注编辑器 Codex Skill，包含完整运行时代码、安装与诊断脚本、接入说明和数据格式说明。
 
