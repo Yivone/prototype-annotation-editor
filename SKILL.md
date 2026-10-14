@@ -1,6 +1,6 @@
 ---
 name: prototype-annotation-editor
-description: 将自研原型标注编辑器安装、更新或诊断到 React + Vite 原型项目，提供可视化框选、富文本说明、多人独立标注文件、调整版本、版本概览和本地保存。用户提到安装自研标注、复用 ips-annotated 标注层或维护 annotation-sets/version-overviews 时使用；不用于官方 @axhub/annotation 的 AnnotationViewer 数据维护。
+description: 将自研原型标注编辑器安装、更新或诊断到 React + Vite 原型项目，提供可视化框选、富文本说明、多人独立标注文件、调整版本、版本概览和本地保存。用户提到安装标注功能、复用 ips-annotated 标注层或维护 annotation-sets/version-overviews 时使用；不用于官方 @axhub/annotation 的 AnnotationViewer 数据维护。
 ---
 
 # 自研原型标注编辑器
