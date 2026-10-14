@@ -1,0 +1,4 @@
+interface:
+  display_name: "自研原型标注编辑器"
+  short_description: "把可视化框选、富文本、版本管理和本地保存能力接入原型"
+  default_prompt: "使用 $prototype-annotation-editor 为当前原型安装或维护自研标注编辑能力。"
