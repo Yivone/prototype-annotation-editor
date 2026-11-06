@@ -55,7 +55,7 @@ export default function AnnotationRichTextEditor({
   useEffect(() => {
     const editor = editorRef.current;
     const safeValue = sanitizeAnnotationHtml(value);
-    if (editor && editor.innerHTML !== safeValue) {
+    if (editor && sanitizeAnnotationHtml(editor.innerHTML) !== safeValue) {
       editor.innerHTML = safeValue;
     }
   }, [value]);
@@ -112,9 +112,7 @@ export default function AnnotationRichTextEditor({
       return;
     }
     const safeHtml = sanitizeAnnotationHtml(editor.innerHTML);
-    if (editor.innerHTML !== safeHtml) {
-      editor.innerHTML = safeHtml;
-    }
+    // Sanitize the stored value without replacing live DOM and resetting the caret.
     onChange(safeHtml);
     saveSelection();
   }

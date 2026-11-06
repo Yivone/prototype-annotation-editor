@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, BookOpen, Eye, GripVertical, History, MousePointer2, PencilLine, Plus, Save, Search, Trash2, UserRound, X } from 'lucide-react';
-import AnnotationMarkdownViewer, { markdownToRichTextHtml } from './AnnotationMarkdownViewer';
+import AnnotationMarkdownViewer, { markdownToRichTextHtml, sanitizeAnnotationHtml } from './AnnotationMarkdownViewer';
 import AnnotationRichTextEditor from './AnnotationRichTextEditor';
 import annotationLayerDocument from './annotation-layer.json';
 
@@ -114,6 +114,7 @@ type PanelResize = {
 type PrototypeAnnotationLayerProps = {
   currentPageId: string;
   currentPageTitle: string;
+  pageTitles?: Record<string, string>;
   workspaceSelector?: string;
   prototypeId?: string;
 };
@@ -152,14 +153,6 @@ function getInitialAnnotationOwnerId() {
   } catch {
     return DEFAULT_ANNOTATION_OWNER_ID;
   }
-}
-
-function todayDateInput() {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = String(today.getMonth() + 1).padStart(2, '0');
-  const day = String(today.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
 }
 
 function formatAdjustmentVersionLabel(date: string) {
@@ -548,6 +541,35 @@ function getAnnotationVersions(annotation: AnnotationRecord): AnnotationVersion[
   }];
 }
 
+// Compare editable content, not bookkeeping timestamps or missing HTML caches.
+function annotationContentKey(value: AnnotationRecord | AnnotationVersion) {
+  return JSON.stringify(value, (key, item) => {
+    if (key === 'updatedAt') return undefined;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    const normalized = typeof item.markdown === 'string'
+      ? { ...item, richTextHtml: sanitizeAnnotationHtml(item.richTextHtml ?? markdownToRichTextHtml(item.markdown)) }
+      : item;
+    return Object.fromEntries(Object.keys(normalized).sort().map((name) => [name, normalized[name]]));
+  });
+}
+
+function missingAdjustmentFields(version: AnnotationVersion) {
+  return [
+    !version.label.trim() ? '版本' : '',
+    !version.author.trim() ? '作者' : '',
+    !version.adjustmentNote.trim() ? '调整说明' : '',
+  ].filter(Boolean);
+}
+
+function changedAdjustmentVersions(annotation: AnnotationRecord, saved?: AnnotationRecord, draft?: AnnotationVersion) {
+  const priorVersions = new Map(saved ? getAnnotationVersions(saved).map((version) => [version.id, version]) : []);
+  return [...getAnnotationVersions(annotation).slice(1), ...(draft ? [draft] : [])]
+    .filter((version) => {
+      const prior = priorVersions.get(version.id);
+      return !prior || annotationContentKey(prior) !== annotationContentKey(version);
+    });
+}
+
 function getAnnotationVersion(annotation: AnnotationRecord, versionId?: string | null) {
   const versions = getAnnotationVersions(annotation);
   return versions.find((version) => version.id === versionId) || versions[versions.length - 1];
@@ -742,6 +764,7 @@ function usePrototypeAnnotationToast() {
 export default function PrototypeAnnotationLayer({
   currentPageId,
   currentPageTitle,
+  pageTitles,
   workspaceSelector = DEFAULT_WORKSPACE_SELECTOR,
   prototypeId = PROTOTYPE_ID,
 }: PrototypeAnnotationLayerProps) {
@@ -761,7 +784,6 @@ export default function PrototypeAnnotationLayer({
   const [draftVersions, setDraftVersions] = useState<Record<string, AnnotationVersion>>({});
   const [dragSelection, setDragSelection] = useState<DragSelection | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition | null>(null);
   const [panelWidth, setPanelWidth] = useState<number | null>(null);
   const [isVersionOverviewOpen, setIsVersionOverviewOpen] = useState(false);
@@ -940,6 +962,11 @@ export default function PrototypeAnnotationLayer({
     () => pageAnnotations.find((item) => item.id === selectedAnnotationId) || null,
     [pageAnnotations, selectedAnnotationId]
   );
+  const pendingAnnotations = pendingAnnotationLocations(documentState, persistedAnnotationsRef.current, draftVersions);
+  const hasPendingChanges = pendingAnnotations.length > 0;
+  const canSaveSelection = selectedAnnotation
+    ? pendingAnnotations.some((item) => item.id === selectedAnnotation.id)
+    : hasPendingChanges;
   const expandedAnnotation = useMemo(
     () => pageAnnotations.find((item) => item.id === expandedAnnotationId) || null,
     [expandedAnnotationId, pageAnnotations]
@@ -998,6 +1025,49 @@ export default function PrototypeAnnotationLayer({
     : 0;
   const panelVisible = mode !== 'closed';
 
+  function pendingAnnotationLocations(
+    sourceDocument: AnnotationLayerDocument,
+    savedAnnotations: AnnotationRecord[],
+    unsavedVersions: Record<string, AnnotationVersion>,
+  ): { id: string; label: string }[] {
+    const savedById = new Map(savedAnnotations
+      .filter((annotation) => annotation.ownerId === annotationOwnerId)
+      .map((annotation) => [annotation.id, annotation]));
+    const activeIds = new Set(sourceDocument.annotations
+      .filter((annotation) => annotation.ownerId === annotationOwnerId)
+      .map((annotation) => annotation.id));
+    const savedDocument = { ...sourceDocument, annotations: savedAnnotations };
+    const describe = (annotation: AnnotationRecord, source: AnnotationLayerDocument) => {
+      const title = pageTitles?.[annotation.pageId]
+        || (annotation.pageId === currentPageId ? currentPageTitle : annotation.pageId);
+      const index = getPageAnnotations(source, annotation.pageId)
+        .filter((item) => item.ownerId === annotationOwnerId)
+        .findIndex((item) => item.id === annotation.id) + 1;
+      return title + ' · 标注 ' + index;
+    };
+    const changed = sourceDocument.annotations
+      .filter((annotation) => {
+        if (annotation.ownerId !== annotationOwnerId) return false;
+        const saved = savedById.get(annotation.id);
+        return Boolean(unsavedVersions[annotation.id]) || !saved
+          || annotationContentKey(saved) !== annotationContentKey(annotation);
+      })
+      .map((annotation) => ({ id: annotation.id, label: describe(annotation, sourceDocument) }));
+    const deleted = savedAnnotations
+      .filter((annotation) => annotation.ownerId === annotationOwnerId && !activeIds.has(annotation.id))
+      .map((annotation) => ({ id: annotation.id, label: describe(annotation, savedDocument) + '（待保存删除）' }));
+    return [...changed, ...deleted];
+  }
+
+  const incompleteAnnotations = pendingAnnotations.flatMap((pending) => {
+    const annotation = documentState.annotations.find((item) => item.id === pending.id);
+    if (!annotation) return [];
+    const saved = persistedAnnotationsRef.current.find((item) => item.id === annotation.id);
+    const missingFields = Array.from(new Set(changedAdjustmentVersions(annotation, saved, draftVersions[annotation.id])
+      .flatMap(missingAdjustmentFields)));
+    return missingFields.length > 0 ? [{ ...pending, missingFields }] : [];
+  });
+
   useEffect(() => {
     const root = getDocumentRoot()?.querySelector('.plan-platform');
     if (!isHTMLElement(root)) {
@@ -1019,7 +1089,6 @@ export default function PrototypeAnnotationLayer({
 
   function markDirty(nextDocument: AnnotationLayerDocument) {
     setDocumentState(nextDocument);
-    setHasPendingChanges(true);
     refreshWorkspaceRect();
   }
 
@@ -1044,7 +1113,6 @@ export default function PrototypeAnnotationLayer({
         ...current,
         [selectedAnnotation.id]: updater(current[selectedAnnotation.id]),
       }));
-      setHasPendingChanges(true);
       return;
     }
     updateSelectedAnnotation((record) => {
@@ -1096,18 +1164,16 @@ export default function PrototypeAnnotationLayer({
     const versions = getAnnotationVersions(selectedAnnotation);
     const sourceVersion = versions[versions.length - 1];
     const createdAt = nowIso();
-    const adjustmentDate = todayDateInput();
     const newVersion: AnnotationVersion = {
       ...sourceVersion,
       id: `${selectedAnnotation.id}-version-${Date.now()}`,
-      label: formatAdjustmentVersionLabel(adjustmentDate),
-      adjustmentDate,
+      label: '',
+      adjustmentDate: '',
       author: '',
       createdAt,
       updatedAt: createdAt,
     };
     setDraftVersions((current) => ({ ...current, [selectedAnnotation.id]: newVersion }));
-    setHasPendingChanges(true);
     setEditingVersionId(newVersion.id);
     toast('info', '已创建待保存调整，保存后生成版本标签。');
   }
@@ -1347,53 +1413,70 @@ export default function PrototypeAnnotationLayer({
 
     setIsSaving(true);
     try {
-      const documentWithDrafts: AnnotationLayerDocument = {
-        ...documentState,
-        annotations: documentState.annotations.map((annotation) => {
-          const draftVersion = draftVersions[annotation.id];
-          return draftVersion
-            ? syncAnnotationVersions(annotation, [...getAnnotationVersions(annotation), draftVersion])
-            : annotation;
-        }),
-      };
-      const incompleteVersion = documentWithDrafts.annotations
-        .filter((annotation) => annotation.ownerId === annotationOwnerId)
-        .flatMap((annotation) => (
-        annotation.versions?.slice(1).map((version) => ({ annotation, version })) || []
-      )).find(({ version }) => (
-        !version.adjustmentDate.trim() || !version.author.trim() || !version.adjustmentNote.trim()
-      ));
-      if (incompleteVersion) {
-        const missingFields = [
-          !incompleteVersion.version.adjustmentDate.trim() ? '调整日期' : '',
-          !incompleteVersion.version.author.trim() ? '作者' : '',
-          !incompleteVersion.version.adjustmentNote.trim() ? '调整说明' : '',
-        ].filter(Boolean).join('、');
-        throw new Error(`${incompleteVersion.annotation.title} 的${incompleteVersion.version.label}需要填写${missingFields}。`);
-      }
       const persistedAnnotations = persistedAnnotationsRef.current;
       const persistedById = new Map(
         persistedAnnotations
           .filter((annotation) => annotation.ownerId === annotationOwnerId)
           .map((annotation) => [annotation.id, annotation])
       );
-      const ownedAnnotations = documentWithDrafts.annotations.filter(
+      const ownedAnnotations = documentState.annotations.filter(
         (annotation) => annotation.ownerId === annotationOwnerId
       );
       const currentOwnedIds = new Set(ownedAnnotations.map((annotation) => annotation.id));
-      const changedAnnotations = ownedAnnotations.filter((annotation) => {
+      const pendingRecords = ownedAnnotations.filter((annotation) => {
         const persistedAnnotation = persistedById.get(annotation.id);
-        return !persistedAnnotation || JSON.stringify(persistedAnnotation) !== JSON.stringify(annotation);
+        return Boolean(draftVersions[annotation.id]) || !persistedAnnotation
+          || annotationContentKey(persistedAnnotation) !== annotationContentKey(annotation);
       });
-      const deletedAnnotationIds = persistedAnnotations
+      // A selected card saves only that annotation; drafts on other cards remain untouched.
+      const annotationsToSave = pendingRecords
+        .filter((annotation) => !selectedAnnotation || annotation.id === selectedAnnotation.id)
+        .map((annotation) => {
+          const draftVersion = draftVersions[annotation.id];
+          return draftVersion
+            ? syncAnnotationVersions(annotation, [...getAnnotationVersions(annotation), draftVersion])
+            : annotation;
+        });
+      const deletedAnnotationIds = selectedAnnotation ? [] : persistedAnnotations
         .filter((annotation) => annotation.ownerId === annotationOwnerId && !currentOwnedIds.has(annotation.id))
         .map((annotation) => annotation.id);
-      await persistAnnotationChanges(changedAnnotations, deletedAnnotationIds);
-      persistedAnnotationsRef.current = documentWithDrafts.annotations.map((annotation) => ({ ...annotation }));
-      setDocumentState(documentWithDrafts);
-      setDraftVersions({});
-      setHasPendingChanges(false);
-      toast('success', `已保存 ${annotationOwnerId} 的原型标注。`);
+      if (annotationsToSave.length === 0 && deletedAnnotationIds.length === 0) {
+        toast('info', '当前标注没有需要保存的变更。');
+        return;
+      }
+
+      // Validate only newly created or edited versions in the records being saved.
+      // Legacy versions and unsaved changes on other cards must not block this save.
+      const incompleteVersion = annotationsToSave.flatMap((annotation) =>
+        changedAdjustmentVersions(annotation, persistedById.get(annotation.id))
+          .map((version) => ({ annotation, version }))
+      ).find(({ version }) => missingAdjustmentFields(version).length > 0);
+      if (incompleteVersion) {
+        const location = pendingAnnotations.find((item) => item.id === incompleteVersion.annotation.id)?.label;
+        throw new Error((location || incompleteVersion.annotation.title) + '：请补全'
+          + missingAdjustmentFields(incompleteVersion.version).join('、') + '后保存。');
+      }
+
+      await persistAnnotationChanges(annotationsToSave, deletedAnnotationIds);
+      const savedById = new Map(annotationsToSave.map((annotation) => [annotation.id, annotation]));
+      const deletedIds = new Set(deletedAnnotationIds);
+      const nextDocument: AnnotationLayerDocument = {
+        ...documentState,
+        annotations: documentState.annotations.map((annotation) => annotation.ownerId === annotationOwnerId
+          ? savedById.get(annotation.id) || annotation
+          : annotation),
+      };
+      const nextPersistedAnnotations = persistedAnnotations
+        .filter((annotation) => annotation.ownerId !== annotationOwnerId
+          || (!savedById.has(annotation.id) && !deletedIds.has(annotation.id)))
+        .concat(annotationsToSave);
+      const nextDraftVersions = Object.fromEntries(
+        Object.entries(draftVersions).filter(([annotationId]) => !savedById.has(annotationId) && !deletedIds.has(annotationId))
+      ) as Record<string, AnnotationVersion>;
+      persistedAnnotationsRef.current = nextPersistedAnnotations;
+      setDocumentState(nextDocument);
+      setDraftVersions(nextDraftVersions);
+      toast('success', selectedAnnotation ? '已保存当前标注。' : '已保存待处理的标注修改。');
     } catch (error) {
       toast('error', error instanceof Error ? error.message : '保存失败。');
     } finally {
@@ -1688,7 +1771,7 @@ export default function PrototypeAnnotationLayer({
             {expandedVersion && expandedVersion.label !== '初始版本' && (
               <div className="prototype-annotation-panel__adjustment-summary">
                 <div className="prototype-annotation-panel__adjustment-meta">
-                  <span>调整日期：{expandedVersion.adjustmentDate || '未填写'}</span>
+                  <span>版本：{expandedVersion.label}</span>
                   <span>作者：{expandedVersion.author || '未填写'}</span>
                 </div>
                 <div className="prototype-annotation-panel__adjustment-note">
@@ -1781,9 +1864,20 @@ export default function PrototypeAnnotationLayer({
                   data-annotation-card-id={annotation.id}
                   key={annotation.id}
                   onDoubleClick={() => {
+                    if (ENABLE_EDITING && annotation.ownerId !== annotationOwnerId) {
+                      toast('warning', '该标注属于 ' + annotation.ownerId + '，请先切换为对应标注人再编辑。');
+                      return;
+                    }
                     setSelectedAnnotationId(annotation.id);
                     setViewVersionIds((current) => ({ ...current, [annotation.id]: selectedViewVersion.id }));
-                    setExpandedAnnotationId(annotation.id);
+                    if (ENABLE_EDITING) {
+                      setEditingVersionId(draftVersions[annotation.id]?.id || selectedViewVersion.id);
+                      setExpandedAnnotationId(null);
+                      setTool('idle');
+                      setMode('edit');
+                    } else {
+                      setExpandedAnnotationId(annotation.id);
+                    }
                   }}
                   ref={(element) => {
                     if (element) {
@@ -1864,7 +1958,7 @@ export default function PrototypeAnnotationLayer({
                   {selectedViewVersion.label !== '初始版本' && (
                     <div className="prototype-annotation-card__adjustment">
                       <div>
-                        <span>{selectedViewVersion.adjustmentDate || '未填写日期'}</span>
+                        <span>版本：{selectedViewVersion.label}</span>
                         <span>{selectedViewVersion.author || '未填写作者'}</span>
                       </div>
                       <p>{selectedViewVersion.adjustmentNote || '暂无调整说明'}</p>
@@ -2002,18 +2096,18 @@ export default function PrototypeAnnotationLayer({
             </div>
             <div className="prototype-annotation-panel__adjustment-fields">
               <label>
-                <span>调整日期 <i aria-hidden>*</i></span>
+                <span>版本 <i aria-hidden>*</i></span>
                 <input
                   aria-required="true"
                   required
-                  type="date"
-                  value={selectedVersion.adjustmentDate}
+                  type="text"
+                  value={selectedVersion.label}
+                  placeholder="请输入版本名称"
                   onChange={(event) => {
-                    const adjustmentDate = event.target.value;
+                    const label = event.target.value;
                     updateSelectedVersion((version) => ({
                       ...version,
-                      adjustmentDate,
-                      label: formatAdjustmentVersionLabel(adjustmentDate),
+                      label,
                       updatedAt: nowIso(),
                     }));
                   }}
@@ -2165,7 +2259,13 @@ export default function PrototypeAnnotationLayer({
                   <MousePointer2 size={16} aria-hidden />
                   新增框选
                 </button>
-                <button className="is-primary" disabled={isSaving || !hasPendingChanges} type="button" onClick={handleSave}>
+                <button
+                  className="is-primary"
+                  disabled={isSaving || !canSaveSelection}
+                  title={selectedAnnotation ? '仅保存当前标注' : '保存待处理的标注修改'}
+                  type="button"
+                  onClick={handleSave}
+                >
                   <Save size={16} aria-hidden />
                   {isSaving ? '保存中' : '保存'}
                 </button>
@@ -2174,6 +2274,13 @@ export default function PrototypeAnnotationLayer({
           </>
         )}
       </div>
+
+      {ENABLE_EDITING && incompleteAnnotations.length > 0 && (
+        <div className="prototype-annotation-global-pending" role="status" aria-label="标注必填项提醒">
+          <strong>有 {incompleteAnnotations.length} 个标注缺少必填项，尚未保存</strong>
+          <span>{incompleteAnnotations.map((item) => item.label + '（缺少：' + item.missingFields.join('、') + '）').join('；')}</span>
+        </div>
+      )}
 
       {mode !== 'closed' && (
         <div

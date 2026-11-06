@@ -54,9 +54,9 @@ annotation-sets/<owner-id>/<annotation-id>.json
 
 ## 调整版本
 
-`versions[]` 中每个调整版本包含 `id`、`label`、`markdown`、`richTextHtml`、`adjustmentNote`、`adjustmentDate`、`author`、`createdAt` 和 `updatedAt`。
+调整版本的 `label` 是用户填写的版本名称；新增或编辑的版本保存时，版本名称、作者和调整说明为必填项。仅校验本次保存的标注中新增或修改的调整版本，其他标注的未完成草稿和已有旧版本不阻止当前标注保存。
 
-初始版本由标注根字段表示。调整版本的日期、作者和调整说明为必填项。
+`versions[]` 中每个版本还包含 `id`、`markdown`、`richTextHtml`、`adjustmentNote`、`author`、`createdAt` 和 `updatedAt`。旧数据中的 `adjustmentDate` 保留原值，不迁移、不用版本名称覆盖；新建版本保持空值。初始版本仍由标注根字段表示。
 
 ## 版本概览
 

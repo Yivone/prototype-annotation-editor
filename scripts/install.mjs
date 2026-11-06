@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SKILL_NAME = 'prototype-annotation-editor';
-const SKILL_VERSION = '1.0.0';
+const SKILL_VERSION = '1.1.0';
 const MANIFEST_NAME = '.prototype-annotation-editor.json';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ASSET_ROOT = path.resolve(SCRIPT_DIR, '..', 'assets', 'runtime');

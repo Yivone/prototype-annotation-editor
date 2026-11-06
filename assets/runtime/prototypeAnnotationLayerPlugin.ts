@@ -88,6 +88,14 @@ export function prototypeAnnotationLayerPlugin(projectRoot: string): Plugin {
       return undefined;
     },
     configureServer(server) {
+      // Invalidate cached glob transforms without sending HMR or reloading the editor.
+      function invalidatePrototype(prototypeDir: string) {
+        for (const module of server.moduleGraph.idToModuleMap.values()) {
+          if (module.file && isPathInside(prototypeDir, module.file)) {
+            server.moduleGraph.invalidateModule(module);
+          }
+        }
+      }
       server.middlewares.use(ANNOTATION_RECORDS_API_PATH, async (req, res, next) => {
         if (req.method === 'OPTIONS') {
           res.statusCode = 204;
@@ -189,6 +197,7 @@ export function prototypeAnnotationLayerPlugin(projectRoot: string): Plugin {
             }
             return path.relative(resolvedProjectRoot, targetPath).split(path.sep).join('/');
           });
+          invalidatePrototype(prototypeDir);
           sendJson(res, 200, { ok: true, savedPaths, deletedPaths });
         } catch (error) {
           sendJson(res, 500, { ok: false, message: error instanceof Error ? error.message : 'Save failed.' });
@@ -264,6 +273,7 @@ export function prototypeAnnotationLayerPlugin(projectRoot: string): Plugin {
             fs.writeFileSync(targetPath, `${JSON.stringify(standaloneDocument, null, 2)}\n`, 'utf8');
             return path.relative(resolvedProjectRoot, targetPath).split(path.sep).join('/');
           });
+          invalidatePrototype(prototypeDir);
           sendJson(res, 200, { ok: true, paths: savedPaths });
         } catch (error) {
           sendJson(res, 500, { ok: false, message: error instanceof Error ? error.message : 'Save failed.' });
@@ -304,6 +314,7 @@ export function prototypeAnnotationLayerPlugin(projectRoot: string): Plugin {
 
           fs.mkdirSync(prototypeDir, { recursive: true });
           fs.writeFileSync(targetPath, `${JSON.stringify(payload.source, null, 2)}\n`, 'utf8');
+          invalidatePrototype(prototypeDir);
           sendJson(res, 200, { ok: true, path: path.relative(resolvedProjectRoot, targetPath).split(path.sep).join('/') });
         } catch (error) {
           sendJson(res, 500, { ok: false, message: error instanceof Error ? error.message : 'Save failed.' });
